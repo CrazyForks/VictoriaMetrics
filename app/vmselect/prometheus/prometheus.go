@@ -1,8 +1,10 @@
 package prometheus
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -44,6 +46,9 @@ var (
 	maxLookback = flag.Duration("search.maxLookback", 0, "Synonym to -query.lookback-delta from Prometheus. "+
 		"The value is dynamically detected from interval between time series datapoints if not set. It can be overridden on per-query basis via max_lookback arg. "+
 		"See also '-search.maxStalenessInterval' flag, which has the same meaning due to historical reasons")
+	minStalenessInterval = flag.Duration("search.minStalenessInterval", 0, "The minimum interval for staleness calculations. "+
+		"This flag could be useful for removing gaps on graphs generated from time series with irregular intervals between samples. "+
+		"See also '-search.maxStalenessInterval'")
 	maxStalenessInterval = flag.Duration("search.maxStalenessInterval", 0, "The maximum interval for staleness calculations. "+
 		"By default, it is automatically calculated from the median interval between samples. This flag could be useful for tuning "+
 		"Prometheus data model closer to Influx-style data model. See https://prometheus.io/docs/prometheus/latest/querying/basics/#staleness for details. "+
@@ -119,7 +124,7 @@ func FederateHandler(startTime time.Time, at *auth.Token, w http.ResponseWriter,
 	if err != nil {
 		return err
 	}
-	lookbackDelta, err := getMaxLookback(r)
+	lookbackDelta, err := getMaxLookback(r, *maxStalenessInterval)
 	if err != nil {
 		return err
 	}
@@ -854,7 +859,7 @@ func QueryHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Token, w
 	if err != nil {
 		return err
 	}
-	lookbackDelta, err := getMaxLookback(r)
+	lookbackDelta, err := getMaxLookback(r, *maxStalenessInterval)
 	if err != nil {
 		return err
 	}
@@ -940,24 +945,7 @@ func QueryHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Token, w
 	} else {
 		queryOffset = 0
 	}
-	ec := &promql.EvalConfig{
-		Start:               start,
-		End:                 start,
-		Step:                step,
-		MaxPointsPerSeries:  *maxPointsPerTimeseries,
-		MaxSeries:           *maxUniqueTimeseries,
-		QuotedRemoteAddr:    httpserver.GetQuotedRemoteAddr(r),
-		Deadline:            deadline,
-		MayCache:            mayCache,
-		LookbackDelta:       lookbackDelta,
-		RoundDigits:         getRoundDigits(r),
-		EnforcedTagFilterss: etfs,
-		GetRequestURI: func() string {
-			return httpserver.GetRequestURI(r)
-		},
-
-		DenyPartialResponse: httputil.GetDenyPartialResponse(r),
-	}
+	ec := newEvalConfig(r, start, start, step, deadline, mayCache, lookbackDelta, false /* isDebug */, etfs)
 	err = populateAuthTokens(qt, ec, at, deadline)
 	if err != nil {
 		return fmt.Errorf("cannot populate auth tokens: %w", err)
@@ -1035,8 +1023,9 @@ func QueryRangeHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Tok
 func queryRangeHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Token, w http.ResponseWriter, query string,
 	start, end, step int64, r *http.Request, ct int64, etfs [][]storage.TagFilter) error {
 	deadline := searchutil.GetDeadlineForQuery(r, startTime)
-	mayCache := !httputil.GetBool(r, "nocache")
-	lookbackDelta, err := getMaxLookback(r)
+	isDebug := httputil.GetBool(r, "debug")
+	mayCache := !httputil.GetBool(r, "nocache") && !isDebug
+	lookbackDelta, err := getMaxLookback(r, *maxStalenessInterval)
 	if err != nil {
 		return err
 	}
@@ -1055,28 +1044,19 @@ func queryRangeHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Tok
 		start, end = promql.AdjustStartEnd(start, end, step)
 	}
 
-	ec := &promql.EvalConfig{
-		Start:               start,
-		End:                 end,
-		Step:                step,
-		MaxPointsPerSeries:  *maxPointsPerTimeseries,
-		MaxSeries:           *maxUniqueTimeseries,
-		QuotedRemoteAddr:    httpserver.GetQuotedRemoteAddr(r),
-		Deadline:            deadline,
-		MayCache:            mayCache,
-		LookbackDelta:       lookbackDelta,
-		RoundDigits:         getRoundDigits(r),
-		EnforcedTagFilterss: etfs,
-		GetRequestURI: func() string {
-			return httpserver.GetRequestURI(r)
-		},
-
-		DenyPartialResponse: httputil.GetDenyPartialResponse(r),
-	}
+	ec := newEvalConfig(r, start, end, step, deadline, mayCache, lookbackDelta, isDebug, etfs)
 	err = populateAuthTokens(qt, ec, at, deadline)
 	if err != nil {
 		return fmt.Errorf("cannot populate auth tokens: %w", err)
 	}
+	if isDebug {
+		if err := populateSimulatedData(r, at, ec); err != nil {
+			_ = r.Body.Close()
+			return fmt.Errorf("cannot read simulated samples: %w", err)
+		}
+	}
+	_ = r.Body.Close()
+
 	qs := promql.NewQueryStats(query, at, ec)
 	ec.QueryStats = qs
 
@@ -1107,6 +1087,92 @@ func queryRangeHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Tok
 	WriteQueryRangeResponse(bw, ec.IsPartialResponse.Load(), result, qt, qtDone, qs)
 	if err := bw.Flush(); err != nil {
 		return fmt.Errorf("cannot send query range response to remote client: %w", err)
+	}
+
+	return nil
+}
+
+func newEvalConfig(r *http.Request, start, end, step int64, deadline searchutil.Deadline, mayCache bool, lookbackDelta int64, isDebug bool, etfs [][]storage.TagFilter) *promql.EvalConfig {
+	ec := &promql.EvalConfig{
+		Start:                start,
+		End:                  end,
+		Step:                 step,
+		MaxPointsPerSeries:   *maxPointsPerTimeseries,
+		MaxSeries:            *maxUniqueTimeseries,
+		MinStalenessInterval: *minStalenessInterval,
+		QuotedRemoteAddr:     httpserver.GetQuotedRemoteAddr(r),
+		Deadline:             deadline,
+		MayCache:             mayCache,
+		LookbackDelta:        lookbackDelta,
+		RoundDigits:          getRoundDigits(r),
+		EnforcedTagFilterss:  etfs,
+		GetRequestURI: func() string {
+			return httpserver.GetRequestURI(r)
+		},
+
+		DenyPartialResponse: !isDebug && httputil.GetDenyPartialResponse(r),
+	}
+
+	return ec
+}
+
+func populateSimulatedData(r *http.Request, at *auth.Token, evalConfig *promql.EvalConfig) error {
+	type jsonExportBlockInput struct {
+		Metric     map[string]string `json:"metric"`
+		Values     []float64         `json:"values"`
+		Timestamps []int64           `json:"timestamps"`
+	}
+
+	// --- Read and Parse Input Samples from r.Body ---
+	var simulatedSeries []*storage.SimulatedSamples
+	decoder := json.NewDecoder(r.Body)
+	lineNum := 0
+	accountID := uint32(0)
+	projectID := uint32(0)
+	if at != nil {
+		accountID = at.AccountID
+		projectID = at.ProjectID
+	}
+	for {
+		var jeb jsonExportBlockInput
+		if err := decoder.Decode(&jeb); err == io.EOF {
+			break
+		} else if err != nil {
+			return fmt.Errorf("error decoding input JSON on line %d: %w", lineNum, err)
+		}
+
+		var mn = storage.GetMetricNameNoCache(accountID, projectID)
+		for k, v := range jeb.Metric {
+			mn.AddTag(k, v)
+		}
+
+		simulatedSeries = append(simulatedSeries, &storage.SimulatedSamples{
+			Name:       mn,
+			Value:      jeb.Values,
+			Timestamps: jeb.Timestamps,
+		})
+	}
+
+	// It doesn't make sense to debug with empty samples
+	if len(simulatedSeries) == 0 {
+		return fmt.Errorf("no simulated samples found")
+	}
+
+	minStalenessInterval, err := httputil.GetDurationRaw(r, "min_staleness_interval", evalConfig.MinStalenessInterval)
+	if err != nil {
+		return fmt.Errorf("cannot parse `min_staleness_interval` arg: %w", err)
+	}
+
+	maxStalenessInterval, err := httputil.GetDurationRaw(r, "max_staleness_interval", *maxStalenessInterval)
+	if err != nil {
+		return fmt.Errorf("cannot parse `max_staleness_interval` arg: %w", err)
+	}
+
+	evalConfig.SimulatedSamples = simulatedSeries
+	evalConfig.MinStalenessInterval = minStalenessInterval
+	evalConfig.LookbackDelta, err = getMaxLookback(r, maxStalenessInterval)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -1211,7 +1277,7 @@ func adjustLastPoints(tss []netstorage.Result, start, end int64) []netstorage.Re
 	return tss
 }
 
-func getMaxLookback(r *http.Request) (int64, error) {
+func getMaxLookback(r *http.Request, maxStalenessInterval time.Duration) (int64, error) {
 	d := maxLookback.Milliseconds()
 	if d == 0 {
 		d = maxStalenessInterval.Milliseconds()
