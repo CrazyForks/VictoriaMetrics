@@ -4,7 +4,7 @@
 
 {% stripspace %}
 
-ExtractMetricExprsResponse generates response for /extract_metric_exprs .
+ExtractMetricExprsResponse generates response for /extract-metric-exprs .
 {% func ExtractMetricExprsResponse(metrics []string, qt *querytracer.Tracer) %}
 {
 	"status":"success",

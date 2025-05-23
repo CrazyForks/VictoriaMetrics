@@ -9,7 +9,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/querytracer"
 )
 
-// ExtractMetricExprsResponse generates response for /extract_metric_exprs .
+// ExtractMetricExprsResponse generates response for /extract-metric-exprs .
 
 //line app/vmselect/prometheus/extract_metric_exprs_response.qtpl:8
 import (

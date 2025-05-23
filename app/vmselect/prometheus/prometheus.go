@@ -757,7 +757,7 @@ func ConfigHandler(qt *querytracer.Tracer, startTime time.Time, w http.ResponseW
 
 var configDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/api/v1/config"}`)
 
-// ExtractMetricExprsHandler processes /extract_metric_exprs request.
+// ExtractMetricExprsHandler processes /extract-metric-exprs request.
 //
 // It extracts metric expressions from a given PromQL query.
 func ExtractMetricExprsHandler(qt *querytracer.Tracer, startTime time.Time, w http.ResponseWriter, r *http.Request) error {
@@ -783,7 +783,7 @@ func ExtractMetricExprsHandler(qt *querytracer.Tracer, startTime time.Time, w ht
 	return nil
 }
 
-var extractMetricExprsDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/extract_metric_exprs"}`)
+var extractMetricExprsDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/extract-metric-exprs"}`)
 
 // LabelsHandler processes /api/v1/labels request.
 //

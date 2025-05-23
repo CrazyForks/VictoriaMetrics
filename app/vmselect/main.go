@@ -740,7 +740,7 @@ func handleStaticAndSimpleRequests(w http.ResponseWriter, r *http.Request, path 
 		expandWithExprsRequests.Inc()
 		prometheus.ExpandWithExprs(w, r)
 		return true
-	case "prometheus/extract_metric_exprs", "extract_metric_exprs":
+	case "prometheus/extract-metric-exprs", "extract-metric-exprs":
 		extractMetricExprsRequests.Inc()
 		startTime := time.Now()
 		qt := querytracer.New(httputil.GetBool(r, "trace"), "%s", r.URL.Path)
@@ -949,8 +949,8 @@ var (
 	configRequests = metrics.NewCounter(`vm_http_requests_total{path="/select/{}/prometheus/api/v1/config"}`)
 	configErrors   = metrics.NewCounter(`vm_http_request_errors_total{path="/select/{}/prometheus/api/v1/config"}`)
 
-	extractMetricExprsRequests = metrics.NewCounter(`vm_http_requests_total{path="/select/{}/prometheus/extract_metric_exprs"}`)
-	extractMetricExprsErrors   = metrics.NewCounter(`vm_http_request_errors_total{path="/select/{}/prometheus/extract_metric_exprs"}`)
+	extractMetricExprsRequests = metrics.NewCounter(`vm_http_requests_total{path="/select/{}/prometheus/extract-metric-exprs"}`)
+	extractMetricExprsErrors   = metrics.NewCounter(`vm_http_request_errors_total{path="/select/{}/prometheus/extract-metric-exprs"}`)
 )
 
 func usage() {
