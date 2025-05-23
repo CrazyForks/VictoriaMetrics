@@ -735,7 +735,7 @@ type ConfigData struct {
 // ConfigHandler processes /api/v1/config request.
 //
 // It returns the current configuration for search-related flags.
-func ConfigHandler(qt *querytracer.Tracer, startTime time.Time, w http.ResponseWriter, r *http.Request) error {
+func ConfigHandler(qt *querytracer.Tracer, startTime time.Time, w http.ResponseWriter, _ *http.Request) error {
 	defer configDuration.UpdateDuration(startTime)
 
 	config := &ConfigData{
