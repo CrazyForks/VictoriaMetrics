@@ -353,3 +353,9 @@ func extractMetricsFromQuery(query string) ([]string, error) {
 
 	return metrics, nil
 }
+
+// ExtractMetricsFromQuery extracts metric expressions from a PromQL query.
+// This is the exported version of extractMetricsFromQuery.
+func ExtractMetricsFromQuery(query string) ([]string, error) {
+	return extractMetricsFromQuery(query)
+}

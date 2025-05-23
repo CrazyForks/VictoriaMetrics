@@ -726,6 +726,63 @@ func TSDBStatusHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Tok
 
 var tsdbStatusDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/api/v1/status/tsdb"}`)
 
+// ConfigData holds the current configuration values for search-related flags
+type ConfigData struct {
+	MinStalenessInterval string
+	MaxStalenessInterval string
+}
+
+// ConfigHandler processes /api/v1/config request.
+//
+// It returns the current configuration for search-related flags.
+func ConfigHandler(qt *querytracer.Tracer, startTime time.Time, w http.ResponseWriter, r *http.Request) error {
+	defer configDuration.UpdateDuration(startTime)
+
+	config := &ConfigData{
+		MinStalenessInterval: (*minStalenessInterval).String(),
+		MaxStalenessInterval: (*maxStalenessInterval).String(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	bw := bufferedwriter.Get(w)
+	defer bufferedwriter.Put(bw)
+	WriteConfigResponse(bw, config, qt)
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("cannot send config response to remote client: %w", err)
+	}
+	return nil
+}
+
+var configDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/api/v1/config"}`)
+
+// ExtractMetricExprsHandler processes /extract_metric_exprs request.
+//
+// It extracts metric expressions from a given PromQL query.
+func ExtractMetricExprsHandler(qt *querytracer.Tracer, startTime time.Time, w http.ResponseWriter, r *http.Request) error {
+	defer extractMetricExprsDuration.UpdateDuration(startTime)
+
+	query := r.FormValue("query")
+	if len(query) == 0 {
+		return fmt.Errorf("missing `query` arg")
+	}
+
+	metrics, err := promql.ExtractMetricsFromQuery(query)
+	if err != nil {
+		return fmt.Errorf("cannot extract metrics from query: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	bw := bufferedwriter.Get(w)
+	defer bufferedwriter.Put(bw)
+	WriteExtractMetricExprsResponse(bw, metrics, qt)
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("cannot send extract metric exprs response to remote client: %w", err)
+	}
+	return nil
+}
+
+var extractMetricExprsDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/extract_metric_exprs"}`)
+
 // LabelsHandler processes /api/v1/labels request.
 //
 // See https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
