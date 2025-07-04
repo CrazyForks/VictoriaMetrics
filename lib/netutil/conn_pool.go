@@ -148,7 +148,11 @@ func (cp *ConnPool) Get() (*handshake.BufferedConn, error) {
 }
 
 func (cp *ConnPool) getConnSlow() (*handshake.BufferedConn, error) {
-	dialResultCh := make(chan dialResult)
+	// TODO: maybe adjust duration
+	timeoutT := time.NewTimer(2 * time.Second)
+	defer timeoutT.Stop()
+
+	reuseLocalCh := make(chan *handshake.BufferedConn)
 
 	go func() {
 		// Limit the number of concurrent dials.
@@ -158,23 +162,26 @@ func (cp *ConnPool) getConnSlow() (*handshake.BufferedConn, error) {
 		conn, err := cp.dialAndHandshake()
 		<-cp.concurrentDialsCh
 
+		if err != nil {
+			return
+		}
+
 		select {
-		case dialResultCh <- dialResult{
-			bc:  conn,
-			err: err,
-		}:
+		case reuseLocalCh <- conn:
 		default:
-			if conn != nil {
-				cp.Put(conn)
-			}
+			cp.Put(conn)
 		}
 	}()
 
 	select {
-	case dr := <-dialResultCh:
-		return dr.bc, dr.err
 	case bc := <-cp.reuseCh:
 		return bc, nil
+	case <-timeoutT.C:
+		cp.mu.Lock()
+		err := fmt.Errorf("cannot get connection from the pool: timeout exceeded; last dial error: %s", cp.lastDialError)
+		cp.mu.Unlock()
+
+		return nil, err
 	}
 }
 
@@ -313,9 +320,4 @@ func forEachConnPool(f func(cp *ConnPool)) {
 	}
 	wg.Wait()
 	connPoolsMu.Unlock()
-}
-
-type dialResult struct {
-	bc  *handshake.BufferedConn
-	err error
 }
