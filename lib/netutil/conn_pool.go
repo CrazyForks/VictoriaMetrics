@@ -174,6 +174,8 @@ func (cp *ConnPool) getConnSlow() (*handshake.BufferedConn, error) {
 	}()
 
 	select {
+	case bc := <-reuseLocalCh:
+		return bc, nil
 	case bc := <-cp.reuseCh:
 		return bc, nil
 	case <-timeoutT.C:
