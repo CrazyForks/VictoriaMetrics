@@ -4202,6 +4202,37 @@ Internally duration values are converted into nanoseconds.
   reducing the number of selected logs by using more specific [filters](#filters), which return lower number of logs to process by [pipes](#pipes).
 
 
+## Troubleshooting
+
+Guidelines for Diagnosing and Optimizing Slow LogSQL Queries in VictoriaLogs
+
+1. Estimate result size and filter speed  
+   - Replace every pipe (`| …`) in the query with `| count()`.  
+   - Run the modified query to obtain the total number of matching logs and the execution time.  
+   - If the runtime is high, reorder filters so the most selective and least-expensive conditions come first. Because filters run sequentially, an early, cheap filter that removes most logs reduces the work required by later filters. (See the VictoriaLogs [performance tips](https://docs.victoriametrics.com/victorialogs/logsql/#performance-tips) for more ideas.)
+
+2. Test stream filters  
+   - Regular filters must read each block’s header, whereas stream filters can skip many blocks entirely and therefore often run faster.  
+   - If performance remains poor after filter reordering, rewrite the filters as stream filters and compare execution times.
+
+3. Check log-stream cardinality  
+   - Keep only the time filter, replace all other filters with `*`, and append `| count_uniq(_stream_id)` to count distinct log streams in the chosen time range.  
+   - Example: `_time:1d | count_uniq(_stream_id)` returns the number of streams seen in the last day.  
+   - If the result is in the tens of thousands or higher, rethink which fields define a log stream so fewer unique combinations are produced.
+
+4. Inspect block statistics for referenced fields  
+   - Append `| keep <field list> | block_stats` to the query, where `<field list>` includes every field used in filters or pipes (for example, `foo, bar`).  
+   - Optionally add `| stats` to compute aggregates over the block statistics.  
+   - The output highlights which fields dominate disk usage or contribute to slow filtering. For guidance, see the VictoriaLogs FAQ on [identifying space-heavy fields](https://docs.victoriametrics.com/victorialogs/faq/#how-to-determine-which-log-fields-occupy-the-most-of-disk-space).
+
+5. Profile pipes incrementally  
+   - Starting with the optimized filters, add one pipe back at a time and measure the change in execution time.  
+   - Typical bottlenecks and fixes:  
+     * **Expensive operations** (regex matching, JSON parsing) &rarr; replace with faster alternatives if possible.  
+     * **Unbounded `sort`** &rarr; without a `limit`, `sort` stores all logs in RAM. Add a `limit` or reduce the log set feeding the sort.  
+     * **High-cardinality `count_uniq()` or similar stats functions** &rarr; these track every unique value in RAM; reduce input volume or cardinality.  
+     * **Large group counts in `stats by (…)`** &rarr; filter or transform data further to shrink the number of groups.
+
 ## Query options
 
 VictoriaLogs supports the following options, which can be passed in the beginning of [LogsQL query](#query-syntax) `<q>` via `options(opt1=v1, ..., optN=vN) <q>` syntax:
