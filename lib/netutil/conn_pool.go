@@ -29,6 +29,7 @@ type ConnPool struct {
 	conns []connWithTimestamp
 
 	isStopped bool
+	reuseCh   chan *handshake.BufferedConn
 
 	// lastDialError contains the last error seen when dialing remote addr.
 	// When it is non-nil and conns is empty, then ConnPool.Get() return this error.
@@ -66,6 +67,7 @@ func NewConnPool(ms *metrics.Set, name, addr string, handshakeFunc handshake.Fun
 	cp := &ConnPool{
 		d:                 NewTCPDialer(ms, name, addr, dialTimeout, userTimeout),
 		concurrentDialsCh: make(chan struct{}, concurrentDialLimit),
+		reuseCh:           make(chan *handshake.BufferedConn),
 
 		name:             name,
 		handshakeFunc:    handshakeFunc,
@@ -146,28 +148,33 @@ func (cp *ConnPool) Get() (*handshake.BufferedConn, error) {
 }
 
 func (cp *ConnPool) getConnSlow() (*handshake.BufferedConn, error) {
-	for {
-		select {
+	dialResultCh := make(chan dialResult)
+
+	go func() {
 		// Limit the number of concurrent dials.
 		// This should help https://github.com/VictoriaMetrics/VictoriaMetrics/issues/2552
-		case cp.concurrentDialsCh <- struct{}{}:
-			// Create new connection.
-			conn, err := cp.dialAndHandshake()
-			<-cp.concurrentDialsCh
-			return conn, err
+		cp.concurrentDialsCh <- struct{}{}
+		// Create new connection.
+		conn, err := cp.dialAndHandshake()
+		<-cp.concurrentDialsCh
+
+		select {
+		case dialResultCh <- dialResult{
+			bc:  conn,
+			err: err,
+		}:
 		default:
-			// Make attempt to get already established connections from the pool.
-			// It may appear there while waiting for cp.concurrentDialsCh.
-			bc, err := cp.tryGetConn()
-			if err != nil {
-				return nil, err
+			if conn != nil {
+				cp.Put(conn)
 			}
-			if bc == nil {
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
-			return bc, nil
 		}
+	}()
+
+	select {
+	case dr := <-dialResultCh:
+		return dr.bc, dr.err
+	case bc := <-cp.reuseCh:
+		return bc, nil
 	}
 }
 
@@ -224,10 +231,14 @@ func (cp *ConnPool) Put(bc *handshake.BufferedConn) {
 	if cp.isStopped {
 		_ = bc.Close()
 	} else {
-		cp.conns = append(cp.conns, connWithTimestamp{
-			bc:             bc,
-			lastActiveTime: fasttime.UnixTimestamp(),
-		})
+		select {
+		case cp.reuseCh <- bc:
+		default:
+			cp.conns = append(cp.conns, connWithTimestamp{
+				bc:             bc,
+				lastActiveTime: fasttime.UnixTimestamp(),
+			})
+		}
 	}
 	cp.mu.Unlock()
 }
@@ -302,4 +313,9 @@ func forEachConnPool(f func(cp *ConnPool)) {
 	}
 	wg.Wait()
 	connPoolsMu.Unlock()
+}
+
+type dialResult struct {
+	bc  *handshake.BufferedConn
+	err error
 }
