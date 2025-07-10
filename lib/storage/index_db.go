@@ -1911,6 +1911,7 @@ func (db *indexDB) DeleteSeries(qt *querytracer.Tracer, tfss []*TagFilters, maxM
 
 func (db *indexDB) deleteMetricIDs(metricIDs []uint64) {
 	if len(metricIDs) == 0 {
+		// Nothing to delete
 		return
 	}
 
